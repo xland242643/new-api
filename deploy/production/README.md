@@ -134,7 +134,34 @@ chmod 600 .env
 Do not commit `.env` or paste `docker compose config` output into logs because
 it expands all secrets.
 
-## 4. Start And Verify
+## 4. Publish The Fork Image
+
+Every push to the `production` branch runs:
+
+```text
+.github/workflows/production-image.yml
+```
+
+It publishes:
+
+```text
+ghcr.io/xland242643/new-api:production
+ghcr.io/xland242643/new-api:sha-<commit>
+```
+
+In GitHub, open the package settings and set the container package to public
+if the server should pull it without GitHub credentials. Otherwise, create a
+classic personal access token with `read:packages` and log in on the server:
+
+```bash
+echo 'REPLACE_GITHUB_PAT' | docker login ghcr.io -u xland242643 --password-stdin
+```
+
+The mutable `production` tag is convenient for normal deployments. For a
+strictly reproducible deployment or rollback, set `NEW_API_IMAGE` in the
+server `.env` to a `sha-<commit>` tag.
+
+## 5. Start And Verify
 
 ```bash
 cd /srv/server/new-api
@@ -151,7 +178,7 @@ exposing the service broadly and use a unique password. For a public relay,
 enable registration only after email verification, abuse controls, pricing,
 payment, user agreement, and privacy policy are configured.
 
-## 5. Configure DNS And Nginx Proxy Manager
+## 6. Configure DNS And Nginx Proxy Manager
 
 Add an Alibaba Cloud DNS record:
 
@@ -180,7 +207,7 @@ Verify externally:
 curl -fsS https://gateway.metalearn.top/api/status
 ```
 
-## 6. Connect The Existing Open WebUI
+## 7. Connect The Existing Open WebUI
 
 Keep the existing Nginx Proxy Manager host unchanged:
 
@@ -214,7 +241,7 @@ Choose one Open WebUI policy:
 
 Do not leave Open WebUI public signup enabled with an unrestricted shared token.
 
-## 7. Configure The Public Relay
+## 8. Configure The Public Relay
 
 Before opening registration:
 
@@ -238,7 +265,7 @@ upstream authorization, filing, content-safety controls, real-name processes,
 log retention, tax, and payment compliance. Confirm those obligations before
 opening it to the public.
 
-## 8. Configure New API For MetaLearn
+## 9. Configure New API For MetaLearn
 
 1. Add the DeepSeek channel using the upstream DeepSeek API key.
 2. Expose only `deepseek-v4-flash` and `deepseek-v4-pro` initially.
@@ -269,6 +296,11 @@ MetaLearn app
 ```bash
 # Update
 cd /srv/server/new-api
+docker compose pull
+docker compose up -d
+
+# Pin or roll back to an immutable Fork build
+# Edit NEW_API_IMAGE in .env, then:
 docker compose pull
 docker compose up -d
 
