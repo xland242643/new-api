@@ -57,6 +57,7 @@ type GeneralOpenAIRequest struct {
 	ToolChoice          any               `json:"tool_choice,omitempty"`
 	FunctionCall        json.RawMessage   `json:"function_call,omitempty"`
 	User                json.RawMessage   `json:"user,omitempty"`
+	UserId              json.RawMessage   `json:"user_id,omitempty"`
 	// ServiceTier specifies upstream service level and may affect billing.
 	// This field is filtered by default and can be enabled via channel setting allow_service_tier.
 	ServiceTier json.RawMessage `json:"service_tier,omitempty"`
