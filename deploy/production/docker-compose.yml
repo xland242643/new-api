@@ -1,0 +1,46 @@
+services:
+  new-api:
+    image: calciumion/new-api:latest
+    container_name: new-api
+    restart: always
+    command: --log-dir /app/logs
+    environment:
+      TZ: Asia/Shanghai
+      SQL_DSN: ${SQL_DSN}
+      REDIS_CONN_STRING: redis://redis:6379/1
+      SESSION_SECRET: ${SESSION_SECRET}
+      CRYPTO_SECRET: ${CRYPTO_SECRET}
+      NODE_NAME: metalearn-new-api-1
+      ERROR_LOG_ENABLED: "true"
+      BATCH_UPDATE_ENABLED: "true"
+      STREAMING_TIMEOUT: "300"
+      SQL_MAX_IDLE_CONNS: "5"
+      SQL_MAX_OPEN_CONNS: "20"
+      MAX_REQUEST_BODY_MB: "16"
+    volumes:
+      - new_api_data:/data
+      - new_api_logs:/app/logs
+    networks:
+      - shared_web
+      - shared_internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:3000/api/status | grep -q '\"success\":true' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "0.75"
+
+networks:
+  shared_web:
+    external: true
+  shared_internal:
+    external: true
+
+volumes:
+  new_api_data:
+  new_api_logs:
