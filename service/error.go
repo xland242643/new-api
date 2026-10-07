@@ -1,6 +1,8 @@
 package service
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +18,9 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/types"
 )
+
+// Error responses need a finite bound even when an upstream sends a large stream.
+const maxRelayErrorBodySize = 1 << 20
 
 func MidjourneyErrorWrapper(code int, desc string) *dto.MidjourneyResponse {
 	return &dto.MidjourneyResponse{
@@ -86,11 +91,16 @@ func ClaudeErrorWrapperLocal(err error, code string, statusCode int) *dto.Claude
 func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFail bool) (newApiErr *types.NewAPIError) {
 	newApiErr = types.InitOpenAIError(types.ErrorCodeBadResponseStatusCode, resp.StatusCode)
 
-	responseBody, err := io.ReadAll(resp.Body)
+	defer CloseResponseBodyGracefully(resp)
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxRelayErrorBodySize+1))
 	if err != nil {
 		return
 	}
-	CloseResponseBodyGracefully(resp)
+	if len(responseBody) > maxRelayErrorBodySize {
+		logger.LogError(ctx, fmt.Sprintf("bad response status code %d, error body exceeds %d bytes", resp.StatusCode, maxRelayErrorBodySize))
+		newApiErr.Err = fmt.Errorf("bad response status code %d", resp.StatusCode)
+		return
+	}
 	var errResponse dto.GeneralErrorResponse
 	responseBodyText := string(responseBody)
 	responseBodyPreview := common.LocalLogPreview(responseBodyText)
@@ -103,7 +113,14 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 
 	err = common.Unmarshal(responseBody, &errResponse)
 	if err != nil {
-		if showBodyWhenFail {
+		oaiError, isSSE := parseSSEErrorResponse(responseBody)
+		if oaiError != nil {
+			// Forward the error fields, not the event envelope or raw metadata.
+			oaiError.Metadata = nil
+			return types.WithOpenAIError(*oaiError, resp.StatusCode)
+		}
+		isSSE = isSSE || strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream")
+		if showBodyWhenFail && !isSSE {
 			newApiErr.Err = buildErrWithBody("")
 		} else {
 			logger.LogError(ctx, fmt.Sprintf("bad response status code %d, body: %s", resp.StatusCode, responseBodyPreview))
@@ -128,6 +145,73 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		newApiErr.Err = buildErrWithBody(newApiErr.Error())
 	}
 	return
+}
+
+// parseSSEErrorResponse selects the first usable error object from complete SSE
+// events. Data lines in one event form one JSON payload; ordinary data chunks,
+// comments, metadata fields and malformed events must not hide a later error.
+func parseSSEErrorResponse(body []byte) (*types.OpenAIError, bool) {
+	scanner := bufio.NewScanner(bytes.NewReader(bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))))
+	scanner.Buffer(make([]byte, 64<<10), maxRelayErrorBodySize+1)
+	scanner.Split(scanSSEErrorLine)
+	var data strings.Builder
+	hasData, isSSE := false, false
+	parseEvent := func() *types.OpenAIError {
+		if !hasData {
+			return nil
+		}
+		var errResponse dto.GeneralErrorResponse
+		if common.Unmarshal([]byte(data.String()), &errResponse) != nil || common.GetJsonType(errResponse.Error) != "object" {
+			return nil
+		}
+		return errResponse.TryToOpenAIError()
+	}
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			if oaiError := parseEvent(); oaiError != nil {
+				return oaiError, true
+			}
+			data.Reset()
+			hasData = false
+			continue
+		}
+		field, value, _ := strings.Cut(line, ":")
+		if field != "data" {
+			continue
+		}
+		isSSE = true
+		value = strings.TrimPrefix(value, " ")
+		if hasData {
+			data.WriteByte('\n')
+		}
+		data.WriteString(value)
+		hasData = true
+	}
+	if scanner.Err() != nil {
+		return nil, isSSE
+	}
+	// Some upstream error responses omit the final event separator. The finite
+	// HTTP body can still contain a complete JSON error payload at EOF.
+	return parseEvent(), isSSE
+}
+
+// SSE accepts LF, CRLF and CR as line endings.
+func scanSSEErrorLine(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if i := bytes.IndexAny(data, "\r\n"); i >= 0 {
+		if data[i] == '\r' && i+1 == len(data) && !atEOF {
+			return 0, nil, nil
+		}
+		advance = i + 1
+		if data[i] == '\r' && advance < len(data) && data[advance] == '\n' {
+			advance++
+		}
+		return advance, data[:i], nil
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
 }
 
 func ResetStatusCode(newApiErr *types.NewAPIError, statusCodeMappingStr string) {
