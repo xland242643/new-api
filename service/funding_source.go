@@ -27,13 +27,22 @@ type FundingSource interface {
 // ---------------------------------------------------------------------------
 
 type WalletFunding struct {
-	userId   int
-	consumed int // 实际预扣的用户额度
+	userId    int
+	consumed  int // 实际预扣的用户额度
+	requestId string
+	metalearn bool
 }
 
 func (w *WalletFunding) Source() string { return BillingSourceWallet }
 
 func (w *WalletFunding) PreConsume(amount int) error {
+	if w.metalearn {
+		if err := model.PreConsumeMetaLearnWallet(w.requestId, w.userId, int64(amount)); err != nil {
+			return err
+		}
+		w.consumed = amount
+		return nil
+	}
 	if amount <= 0 {
 		return nil
 	}
@@ -45,6 +54,9 @@ func (w *WalletFunding) PreConsume(amount int) error {
 }
 
 func (w *WalletFunding) Settle(delta int) error {
+	if w.metalearn {
+		return model.ErrMetaLearnFundingConflict
+	}
 	if delta == 0 {
 		return nil
 	}
@@ -55,6 +67,9 @@ func (w *WalletFunding) Settle(delta int) error {
 }
 
 func (w *WalletFunding) Refund() error {
+	if w.metalearn {
+		return refundWithRetry(func() error { return model.RefundMetaLearnWalletFunding(w.requestId, w.userId) })
+	}
 	if w.consumed <= 0 {
 		return nil
 	}

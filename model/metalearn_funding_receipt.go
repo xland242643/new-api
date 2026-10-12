@@ -31,6 +31,7 @@ type MetaLearnFundingReceipt struct {
 	RequestID       string `gorm:"primaryKey;type:varchar(64)"`
 	BusinessUserID  string `gorm:"type:varchar(36);not null;index"`
 	GatewayUserID   int
+	FundingSource   string `gorm:"type:varchar(16);not null;default:subscription"`
 	SubscriptionID  int
 	PeriodID        int
 	Channel         string `gorm:"type:varchar(32)"`
@@ -58,6 +59,7 @@ type MetaLearnFundingReservation struct {
 
 type MetaLearnFundingResult struct {
 	ReceiptScope    string `json:"receipt_scope"`
+	FundingSource   string `json:"funding_source"`
 	BusinessUserID  string `json:"business_user_id"`
 	GatewayUserID   int    `json:"gateway_user_id"`
 	RequestID       string `json:"request_id"`
@@ -120,7 +122,7 @@ func lockedMetaLearnFundingTx(tx *gorm.DB, requestID string, userID, subID int) 
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("request_id = ?", requestID).First(&receipt).Error; err != nil {
 		return nil, nil, nil, ErrMetaLearnRequestNotFound
 	}
-	if receipt.GatewayUserID != userID || record.UserId != userID || record.UserSubscriptionId != subID || receipt.SubscriptionID != subID || receipt.InitialQuota != record.PreConsumed {
+	if receipt.FundingSource != "subscription" || receipt.GatewayUserID != userID || record.UserId != userID || record.UserSubscriptionId != subID || receipt.SubscriptionID != subID || receipt.InitialQuota != record.PreConsumed {
 		return nil, nil, nil, ErrMetaLearnIdentity
 	}
 	var sub UserSubscription
@@ -318,6 +320,9 @@ func ReportMetaLearnTokenAccounting(requestID string, userID, subID int, status 
 	if status != "reported_ok" && status != "reported_error" && status != "queued" && status != "not_required" {
 		return ErrMetaLearnInvalid
 	}
+	if subID == 0 {
+		return reportMetaLearnWalletTokenAccounting(requestID, userID, status)
+	}
 	return metalearnTransaction(func(tx *gorm.DB) error {
 		r, _, _, err := lockedMetaLearnFundingTx(tx, requestID, userID, subID)
 		if err != nil {
@@ -350,11 +355,19 @@ func GetMetaLearnFundingReceipt(businessID, requestID string) (*MetaLearnFunding
 			}
 			return err
 		}
-		verified, _, _, err := lockedMetaLearnFundingTx(tx, requestID, r.GatewayUserID, r.SubscriptionID)
+		var verified *MetaLearnFundingReceipt
+		var err error
+		scope := "subscription_funding"
+		if r.FundingSource == "wallet" {
+			verified, _, err = lockedMetaLearnWalletFundingTx(tx, requestID, r.GatewayUserID)
+			scope = "wallet_funding"
+		} else {
+			verified, _, _, err = lockedMetaLearnFundingTx(tx, requestID, r.GatewayUserID, r.SubscriptionID)
+		}
 		if err != nil {
 			return err
 		}
-		result = &MetaLearnFundingResult{ReceiptScope: "subscription_funding", BusinessUserID: verified.BusinessUserID, GatewayUserID: verified.GatewayUserID, RequestID: verified.RequestID, SubscriptionID: verified.SubscriptionID, Channel: verified.Channel, PeriodKey: verified.PeriodKey, PlanID: verified.PlanID, QuotaPerCredit: MetaLearnQuotaPerCredit, FundingStatus: verified.FundingStatus, ReservedQuota: verified.ReservedQuota, SettledQuota: verified.SettledQuota, TokenAccounting: verified.TokenAccounting, UpdatedAt: verified.UpdatedAt}
+		result = &MetaLearnFundingResult{ReceiptScope: scope, FundingSource: verified.FundingSource, BusinessUserID: verified.BusinessUserID, GatewayUserID: verified.GatewayUserID, RequestID: verified.RequestID, SubscriptionID: verified.SubscriptionID, Channel: verified.Channel, PeriodKey: verified.PeriodKey, PlanID: verified.PlanID, QuotaPerCredit: MetaLearnQuotaPerCredit, FundingStatus: verified.FundingStatus, ReservedQuota: verified.ReservedQuota, SettledQuota: verified.SettledQuota, TokenAccounting: verified.TokenAccounting, UpdatedAt: verified.UpdatedAt}
 		return nil
 	})
 	return result, err

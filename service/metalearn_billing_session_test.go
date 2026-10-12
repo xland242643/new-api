@@ -60,7 +60,7 @@ func newMetaLearnSessionFixture(t *testing.T) *metaLearnSessionFixture {
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.SubscriptionPlan{}, &model.UserSubscription{}, &model.SubscriptionPreConsumeRecord{}, &model.MetaLearnBillingUser{}, &model.MetaLearnBillingPeriod{}, &model.MetaLearnFundingReceipt{}, &model.MetaLearnFundingReservation{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.SubscriptionPlan{}, &model.UserSubscription{}, &model.SubscriptionPreConsumeRecord{}, &model.MetaLearnBillingUser{}, &model.MetaLearnBillingPeriod{}, &model.MetaLearnFundingReceipt{}, &model.MetaLearnFundingReservation{}, &model.TopUp{}, &model.MetaLearnWalletTopUp{}))
 	planID := 49000 + int(metaLearnSessionPlanSequence.Add(1))
 	require.NoError(t, db.Create(&model.SubscriptionPlan{Id: planID, Title: "paid monthly", Enabled: true, TotalAmount: 100000, QuotaResetPeriod: model.SubscriptionResetNever}).Error)
 	t.Cleanup(func() {
@@ -82,7 +82,7 @@ func newMetaLearnSessionFixture(t *testing.T) *metaLearnSessionFixture {
 		RequestId: "session-request", UserId: user.GatewayUserID, UserGroup: model.MetaLearnMonthlyGroup,
 		TokenId: mapping.RelayTokenID, TokenKey: strings.TrimPrefix(user.RelayToken, "sk-"), TokenUnlimited: true,
 		RelayFormat: types.RelayFormatOpenAI, RelayMode: relayconstant.RelayModeChatCompletions,
-		OriginModelName: "qwen-native-pricing", UserSetting: dto.UserSetting{BillingPreference: "subscription_only"},
+		OriginModelName: "qwen-native-pricing", UserSetting: dto.UserSetting{BillingPreference: "subscription_first"},
 	}}
 }
 
@@ -171,7 +171,7 @@ func TestMetaLearnBillingSessionRejectsAlternateFundingAdmission(t *testing.T) {
 	session, err := NewBillingSession(f.c, f.info, 100)
 	require.Nil(t, session)
 	require.ErrorIs(t, err, ErrMetaLearnRelayUnsupported)
-	f.info.UserSetting.BillingPreference = "subscription_only"
+	f.info.UserSetting.BillingPreference = "subscription_first"
 	f.c = metaLearnGuardContext(http.MethodPost, "/pg/chat/completions")
 	session, err = NewBillingSession(f.c, f.info, 100)
 	require.Nil(t, session)

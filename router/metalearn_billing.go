@@ -12,6 +12,9 @@ func setMetaLearnBillingRouter(api *gin.RouterGroup) {
 	integration.POST("/users", controller.ProvisionMetaLearnUser)
 	integration.POST("/periods", controller.GrantMetaLearnPeriod)
 	integration.POST("/periods/revoke", controller.RevokeMetaLearnPeriod)
+	integration.POST("/topups", controller.GrantMetaLearnTopUp)
+	integration.POST("/topups/revoke", controller.RevokeMetaLearnTopUp)
 	integration.GET("/users/:business_user_id/subscriptions", controller.QueryMetaLearnSubscriptions)
+	integration.GET("/users/:business_user_id/wallet", controller.QueryMetaLearnWallet)
 	integration.GET("/users/:business_user_id/requests/:request_id", controller.QueryMetaLearnFundingReceipt)
 }

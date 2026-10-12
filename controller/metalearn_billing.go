@@ -32,6 +32,12 @@ func metaLearnError(c *gin.Context, err error) {
 		status, code = http.StatusNotFound, "request_not_found"
 	case errors.Is(err, model.ErrMetaLearnFundingConflict):
 		status, code = http.StatusConflict, "funding_conflict"
+	case errors.Is(err, model.ErrMetaLearnTopUpConflict):
+		status, code = http.StatusConflict, "topup_conflict"
+	case errors.Is(err, model.ErrMetaLearnTopUpRevoked):
+		status, code = http.StatusConflict, "topup_revoked"
+	case errors.Is(err, model.ErrMetaLearnWalletOverflow):
+		status, code = http.StatusConflict, "wallet_overflow"
 	}
 	c.JSON(status, gin.H{"success": false, "code": code})
 }
@@ -107,6 +113,31 @@ func QueryMetaLearnSubscriptions(c *gin.Context) {
 
 func QueryMetaLearnFundingReceipt(c *gin.Context) {
 	result, err := model.GetMetaLearnFundingReceipt(c.Param("business_user_id"), c.Param("request_id"))
+	if err != nil {
+		metaLearnError(c, err)
+		return
+	}
+	common.ApiSuccess(c, result)
+}
+
+func setMetaLearnTopUp(c *gin.Context, revoke bool) {
+	var req model.MetaLearnTopUpRequest
+	if err := decodeMetaLearnRequest(c, &req, "business_user_id", "channel", "order_key", "product_id", "quota_amount", "currency", "paid_amount_minor"); err != nil {
+		metaLearnError(c, err)
+		return
+	}
+	result, err := model.SetMetaLearnWalletTopUp(req, revoke)
+	if err != nil {
+		metaLearnError(c, err)
+		return
+	}
+	common.ApiSuccess(c, result)
+}
+
+func GrantMetaLearnTopUp(c *gin.Context)  { setMetaLearnTopUp(c, false) }
+func RevokeMetaLearnTopUp(c *gin.Context) { setMetaLearnTopUp(c, true) }
+func QueryMetaLearnWallet(c *gin.Context) {
+	result, err := model.GetMetaLearnWallet(c.Param("business_user_id"))
 	if err != nil {
 		metaLearnError(c, err)
 		return

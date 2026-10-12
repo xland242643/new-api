@@ -142,7 +142,9 @@ func metaLearnMappedUser(tx *gorm.DB, id string) (*MetaLearnBillingUser, error) 
 		return nil, ErrMetaLearnIdentity
 	}
 	setting := dto.UserSetting{}
-	if common.UnmarshalJsonStr(user.Setting, &setting) != nil || setting.BillingPreference != "subscription_only" || user.Status != common.UserStatusEnabled || user.Role != common.RoleCommonUser || user.Group != MetaLearnMonthlyGroup {
+	// Existing mapped subscription-only accounts remain valid until the scoped
+	// idempotent provision upgrades them. Their relay still cannot use a wallet.
+	if common.UnmarshalJsonStr(user.Setting, &setting) != nil || (setting.BillingPreference != "subscription_first" && setting.BillingPreference != "subscription_only") || user.Status != common.UserStatusEnabled || user.Role != common.RoleCommonUser || user.Group != MetaLearnMonthlyGroup {
 		return nil, ErrMetaLearnIdentity
 	}
 	return &mapping, nil
@@ -175,7 +177,7 @@ func EnsureMetaLearnBillingUser(id string) (*MetaLearnUserResult, error) {
 			if err != nil {
 				return err
 			}
-			settings, err := common.Marshal(dto.UserSetting{BillingPreference: "subscription_only"})
+			settings, err := common.Marshal(dto.UserSetting{BillingPreference: "subscription_first"})
 			if err != nil {
 				return err
 			}
@@ -196,6 +198,26 @@ func EnsureMetaLearnBillingUser(id string) (*MetaLearnUserResult, error) {
 				return err
 			}
 		}
+		// Upgrade only an already dedicated mapped account's previous product
+		// preference. Preserve all unrelated user settings and ordinary users.
+		var existing User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&existing, mapping.GatewayUserID).Error; err != nil {
+			return ErrMetaLearnIdentity
+		}
+		setting := dto.UserSetting{}
+		if common.UnmarshalJsonStr(existing.Setting, &setting) != nil {
+			return ErrMetaLearnIdentity
+		}
+		if setting.BillingPreference == "subscription_only" && existing.Status == common.UserStatusEnabled && existing.Role == common.RoleCommonUser && existing.Group == MetaLearnMonthlyGroup {
+			setting.BillingPreference = "subscription_first"
+			encoded, err := common.Marshal(setting)
+			if err != nil {
+				return err
+			}
+			if err := tx.Model(&existing).Update("setting", string(encoded)).Error; err != nil {
+				return err
+			}
+		}
 		if _, err := metaLearnMappedUser(tx, id); err != nil {
 			return err
 		}
@@ -211,6 +233,9 @@ func EnsureMetaLearnBillingUser(id string) (*MetaLearnUserResult, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+	if err := InvalidateUserCache(result.GatewayUserID); err != nil {
+		common.SysLog("metalearn_user_cache_invalidation_failed")
 	}
 	return &result, nil
 }

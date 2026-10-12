@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -44,6 +45,9 @@ func (s *BillingSession) Settle(actualQuota int) error {
 	if funding, ok := s.funding.(*SubscriptionFunding); ok && funding.metalearn {
 		return s.settleMetaLearnLocked(funding, actualQuota)
 	}
+	if funding, ok := s.funding.(*WalletFunding); ok && funding.metalearn {
+		return s.settleMetaLearnWalletLocked(funding, actualQuota)
+	}
 	if s.settled {
 		return nil
 	}
@@ -86,6 +90,11 @@ func (s *BillingSession) Refund(c *gin.Context) {
 	s.mu.Lock()
 	if funding, ok := s.funding.(*SubscriptionFunding); ok && funding.metalearn {
 		s.refundMetaLearnLocked(funding)
+		s.mu.Unlock()
+		return
+	}
+	if funding, ok := s.funding.(*WalletFunding); ok && funding.metalearn {
+		s.refundMetaLearnWalletLocked(funding)
 		s.mu.Unlock()
 		return
 	}
@@ -149,6 +158,9 @@ func (s *BillingSession) needsRefundLocked() bool {
 	if sub, ok := s.funding.(*SubscriptionFunding); ok && sub.preConsumed > 0 {
 		return true
 	}
+	if wallet, ok := s.funding.(*WalletFunding); ok && wallet.metalearn {
+		return true
+	}
 	return false
 }
 
@@ -171,6 +183,9 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 	}
 	if funding, ok := s.funding.(*SubscriptionFunding); ok && funding.metalearn {
 		return s.reserveMetaLearnLocked(funding, delta)
+	}
+	if funding, ok := s.funding.(*WalletFunding); ok && funding.metalearn {
+		return s.reserveMetaLearnWalletLocked(funding, delta)
 	}
 
 	if err := s.reserveFunding(delta); err != nil {
@@ -226,6 +241,9 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 		}
 		// TODO: model 层应定义哨兵错误（如 ErrNoActiveSubscription），用 errors.Is 替代字符串匹配
 		errMsg := err.Error()
+		if errors.Is(err, model.ErrMetaLearnWalletInsufficient) {
+			return types.NewErrorWithStatusCode(model.ErrMetaLearnWalletInsufficient, types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+		}
 		if strings.Contains(errMsg, "no active subscription") || strings.Contains(errMsg, "subscription quota insufficient") {
 			return types.NewErrorWithStatusCode(fmt.Errorf("订阅额度不足或未配置订阅: %s", errMsg), types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 		}
@@ -291,6 +309,9 @@ func (s *BillingSession) reserveToken(delta int) error {
 
 // shouldTrust 统一信任额度检查，适用于钱包和订阅。
 func (s *BillingSession) shouldTrust(c *gin.Context) bool {
+	if wallet, ok := s.funding.(*WalletFunding); ok && wallet.metalearn {
+		return false
+	}
 	// 异步任务（ForcePreConsume=true）必须预扣全额，不允许信任旁路
 	if s.relayInfo.ForcePreConsume {
 		return false
@@ -360,13 +381,13 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 	}
 
 	pref := common.NormalizeBillingPreference(relayInfo.UserSetting.BillingPreference)
-	if isMetaLearn && pref != "subscription_only" {
+	if isMetaLearn && pref != "subscription_first" && pref != "subscription_only" {
 		return nil, MetaLearnRelayGuardAPIError(ErrMetaLearnRelayUnsupported)
 	}
 
 	// 钱包路径需要先检查用户额度
 	tryWallet := func() (*BillingSession, *types.NewAPIError) {
-		userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
+		userQuota, err := model.GetUserQuota(relayInfo.UserId, isMetaLearn)
 		if err != nil {
 			return nil, types.NewError(err, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
 		}
@@ -386,7 +407,7 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 
 		session := &BillingSession{
 			relayInfo: relayInfo,
-			funding:   &WalletFunding{userId: relayInfo.UserId},
+			funding:   &WalletFunding{userId: relayInfo.UserId, requestId: relayInfo.RequestId, metalearn: isMetaLearn},
 		}
 		if apiErr := session.preConsume(c, preConsumedQuota); apiErr != nil {
 			return nil, apiErr
