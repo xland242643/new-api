@@ -1101,8 +1101,16 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 	now := GetDBTimestamp()
 
 	returnValue := &SubscriptionPreConsumeResult{}
+	metaUser, checkErr := IsMetaLearnBillingUser(userId)
+	if checkErr != nil {
+		return nil, checkErr
+	}
+	transaction := func(fn func(*gorm.DB) error) error { return DB.Transaction(fn) }
+	if metaUser {
+		transaction = metalearnTransaction
+	}
 
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	err := transaction(func(tx *gorm.DB) error {
 		var existing SubscriptionPreConsumeRecord
 		query := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("request_id = ?", requestId).Limit(1).Find(&existing)
 		if query.Error != nil {
@@ -1118,6 +1126,15 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 			var sub UserSubscription
 			if err := tx.Where("id = ?", existing.UserSubscriptionId).First(&sub).Error; err != nil {
 				return err
+			}
+			if sub.Source == MetaLearnSubscriptionSource {
+				receipt, _, _, err := lockedMetaLearnFundingTx(tx, requestId, userId, sub.Id)
+				if err != nil {
+					return err
+				}
+				if receipt.FundingStatus != MetaLearnFundingReserved || receipt.InitialQuota != amount {
+					return ErrMetaLearnFundingConflict
+				}
 			}
 			returnValue.UserSubscriptionId = sub.Id
 			returnValue.PreConsumed = existing.PreConsumed
@@ -1139,6 +1156,9 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 		}
 		for _, candidate := range subs {
 			sub := candidate
+			if metaUser && sub.Source != MetaLearnSubscriptionSource {
+				continue
+			}
 			plan, err := getSubscriptionPlanByIdTx(tx, sub.PlanId)
 			if err != nil {
 				return err
@@ -1161,6 +1181,11 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 				Status:             "consumed",
 			}
 			if err := tx.Create(record).Error; err != nil {
+				// Meta requests must retry the entire transaction on contention;
+				// never attach a concurrent record to this candidate subscription.
+				if sub.Source == MetaLearnSubscriptionSource {
+					return err
+				}
 				var dup SubscriptionPreConsumeRecord
 				if err2 := tx.Where("request_id = ?", requestId).First(&dup).Error; err2 == nil {
 					if dup.UserId != userId {
@@ -1176,6 +1201,9 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 					returnValue.AmountUsedAfter = sub.AmountUsed
 					return nil
 				}
+				return err
+			}
+			if err := createMetaLearnFundingReceiptTx(tx, record, &sub); err != nil {
 				return err
 			}
 			sub.AmountUsed += amount
@@ -1201,6 +1229,17 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 func RefundSubscriptionPreConsume(requestId string) error {
 	if strings.TrimSpace(requestId) == "" {
 		return errors.New("requestId is empty")
+	}
+	var anchor SubscriptionPreConsumeRecord
+	if err := metalearnDB().Where("request_id = ?", requestId).First(&anchor).Error; err != nil {
+		return err
+	}
+	var source UserSubscription
+	if err := metalearnDB().First(&source, anchor.UserSubscriptionId).Error; err != nil {
+		return err
+	}
+	if source.Source == MetaLearnSubscriptionSource {
+		return RefundMetaLearnFunding(requestId, anchor.UserId, anchor.UserSubscriptionId)
 	}
 	return DB.Transaction(func(tx *gorm.DB) error {
 		var record SubscriptionPreConsumeRecord
@@ -1272,7 +1311,12 @@ func CleanupSubscriptionPreConsumeRecords(olderThanSeconds int64) (int64, error)
 		olderThanSeconds = 7 * 24 * 3600
 	}
 	cutoff := GetDBTimestamp() - olderThanSeconds
-	res := DB.Where("updated_at < ?", cutoff).Delete(&SubscriptionPreConsumeRecord{})
+	// Meta request anchors and extra reservation ids are durable financial
+	// idempotency evidence, including terminal records; they are not TTL caches.
+	metaSubs := DB.Model(&UserSubscription{}).Select("id").Where("source = ?", MetaLearnSubscriptionSource)
+	metaRequests := DB.Model(&MetaLearnFundingReceipt{}).Select("request_id")
+	metaUsers := DB.Model(&MetaLearnBillingUser{}).Select("gateway_user_id")
+	res := DB.Where("updated_at < ? AND user_subscription_id NOT IN (?) AND request_id NOT IN (?) AND user_id NOT IN (?)", cutoff, metaSubs, metaRequests, metaUsers).Delete(&SubscriptionPreConsumeRecord{})
 	return res.RowsAffected, res.Error
 }
 
@@ -1310,10 +1354,17 @@ func PostConsumeUserSubscriptionDelta(userSubscriptionId int, delta int64) error
 	if userSubscriptionId <= 0 {
 		return errors.New("invalid userSubscriptionId")
 	}
-	if delta == 0 {
-		return nil
-	}
 	return DB.Transaction(func(tx *gorm.DB) error {
+		var sub UserSubscription
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&sub, userSubscriptionId).Error; err != nil {
+			return err
+		}
+		if sub.Source == MetaLearnSubscriptionSource {
+			return ErrMetaLearnFundingConflict
+		}
+		if delta == 0 {
+			return nil
+		}
 		return postConsumeUserSubscriptionDeltaTx(tx, userSubscriptionId, delta)
 	})
 }

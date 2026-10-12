@@ -26,6 +26,11 @@ jobs:
         run: |
           echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
           echo "SHORT_SHA=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
+          if [ "$GITHUB_REF" = "refs/heads/production" ]; then
+            echo "RELEASE_TAG=production" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_TAG=candidate" >> "$GITHUB_ENV"
+          fi
           echo "fork-${GITHUB_SHA::12}" > VERSION
 
       - name: Set up Go
@@ -33,8 +38,12 @@ jobs:
         with:
           go-version: '1.26.1'
 
-      - name: Test provider error handling
-        run: go test ./service ./dto
+      - name: Test native funding, scoped integration, and provider errors
+        run: |
+          go test ./model ./service ./router ./middleware ./dto
+          go test ./controller -run MetaLearnSource -count=1
+          go test -race ./model ./service ./router ./middleware -run MetaLearn -count=1
+          go vet ./model ./service ./router ./middleware
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -53,7 +62,7 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.IMAGE }}:production
+            ${{ env.IMAGE }}:${{ env.RELEASE_TAG }}
             ${{ env.IMAGE }}:sha-${{ env.SHORT_SHA }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
@@ -66,5 +75,5 @@ jobs:
       - name: Publish summary
         run: |
           echo "### Production image" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`${IMAGE}:production\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${IMAGE}:${RELEASE_TAG}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "\`${IMAGE}:sha-${SHORT_SHA}\`" >> "$GITHUB_STEP_SUMMARY"

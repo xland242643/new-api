@@ -31,7 +31,7 @@ func billingTestRouter(t *testing.T) *gin.Engine {
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.SubscriptionPlan{}, &model.UserSubscription{}, &model.MetaLearnBillingUser{}, &model.MetaLearnBillingPeriod{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.SubscriptionPlan{}, &model.UserSubscription{}, &model.MetaLearnBillingUser{}, &model.MetaLearnBillingPeriod{}, &model.SubscriptionPreConsumeRecord{}, &model.MetaLearnFundingReceipt{}, &model.MetaLearnFundingReservation{}))
 	require.NoError(t, db.Create(&model.SubscriptionPlan{Id: 991, Title: "fixed server snapshot", Enabled: true, TotalAmount: 11500000}).Error)
 	t.Cleanup(func() { model.DB = priorDB; sqlDB.Close() })
 	t.Setenv("METALEARN_BILLING_INTEGRATION_TOKEN", "isolated-integration-test-token")
@@ -69,6 +69,36 @@ func TestMetaLearnScopedRouteRejectsMissingCredentialAndUnknownFields(t *testing
 	var count int64
 	require.NoError(t, model.DB.Model(&model.User{}).Count(&count).Error)
 	require.Zero(t, count)
+}
+
+func TestMetaLearnFundingReceiptScopedIdentityAndExplicitZero(t *testing.T) {
+	r := billingTestRouter(t)
+	token := "isolated-integration-test-token"
+	user, err := model.EnsureMetaLearnBillingUser(billingUUID)
+	require.NoError(t, err)
+	now := model.GetDBTimestamp()
+	period, err := model.SetMetaLearnBillingPeriod(model.MetaLearnPeriodRequest{BusinessUserID: billingUUID, Channel: "huawei", PeriodKey: "native-request-period", PlanID: 991, StartTime: now-10, EndTime: now+86400}, false)
+	require.NoError(t, err)
+	_, err = model.PreConsumeUserSubscription("gateway-request-1", user.GatewayUserID, "mock-model", 0, 100)
+	require.NoError(t, err)
+	path := "/api/metalearn/billing/users/"+billingUUID+"/requests/gateway-request-1"
+	require.Equal(t, 401, billingCall(r, "GET", path, "", "").Code)
+	for _, uuid := range []string{"724a42ec-a8d6-4c27-9282-993773865b41", billingUUID} {
+		request := "gateway-request-1"; if uuid==billingUUID { request="unknown-request" }
+		out:=billingCall(r, "GET", "/api/metalearn/billing/users/"+uuid+"/requests/"+request, "", token)
+		require.Equal(t, 404, out.Code); require.Contains(t, out.Body.String(), "request_not_found"); require.NotContains(t, out.Body.String(), user.RelayToken)
+	}
+	out := billingCall(r, "GET", path, "", token)
+	require.Equal(t, 200, out.Code); require.Contains(t, out.Body.String(), `"settled_quota":null`)
+	var response struct { Data model.MetaLearnFundingResult `json:"data"` }
+	require.NoError(t, common.Unmarshal(out.Body.Bytes(), &response))
+	require.Equal(t, "subscription_funding", response.Data.ReceiptScope); require.Equal(t, user.GatewayUserID, response.Data.GatewayUserID); require.Equal(t, billingUUID, response.Data.BusinessUserID)
+	require.NoError(t, model.SettleMetaLearnFunding("gateway-request-1", user.GatewayUserID, period.SubscriptionID, 0))
+	out = billingCall(r, "GET", path, "", token)
+	require.Equal(t, 200, out.Code); require.Contains(t, out.Body.String(), `"settled_quota":0`); require.Contains(t, out.Body.String(), `"funding_status":"funding_settled"`)
+	for _, secret := range []string{user.RelayToken, "relay_token", "token_key", "log_content", "prompt", "completion"} { require.NotContains(t, out.Body.String(), secret) }
+	require.Equal(t, 400, billingCall(r, "GET", "/api/metalearn/billing/users/not-uuid/requests/gateway-request-1", "", token).Code)
+	require.Equal(t, 400, billingCall(r, "GET", "/api/metalearn/billing/users/"+billingUUID+"/requests/invalid.request", "", token).Code)
 }
 
 func TestMetaLearnScopedRouterIdempotencyConflictsAndNoSecretQuery(t *testing.T) {

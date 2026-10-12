@@ -74,6 +74,7 @@ type SubscriptionFunding struct {
 	amount         int64 // 预扣的订阅额度（subConsume）
 	subscriptionId int
 	preConsumed    int64
+	metalearn      bool // exact scoped monthly funding, standard chat only
 	// 以下字段在 PreConsume 成功后填充，供 RelayInfo 同步使用
 	AmountTotal     int64
 	AmountUsedAfter int64
@@ -102,6 +103,9 @@ func (s *SubscriptionFunding) PreConsume(_ int) error {
 }
 
 func (s *SubscriptionFunding) Settle(delta int) error {
+	if s.metalearn {
+		return model.ErrMetaLearnFundingConflict
+	}
 	if delta == 0 {
 		return nil
 	}

@@ -207,6 +207,10 @@ const FooterBar = () => {
             >
               New API
             </a>
+            {' · '}
+            <a href='/api/metalearn/source' className='!text-semi-color-primary underline'>
+              Modified source / 修改版源码
+            </a>
           </div>
         </div>
       </footer>
@@ -238,6 +242,10 @@ const FooterBar = () => {
                 className='!text-semi-color-primary font-medium'
               >
                 New API
+              </a>
+              {' · '}
+              <a href='/api/metalearn/source' className='!text-semi-color-primary underline'>
+                Modified source / 修改版源码
               </a>
             </div>
           </div>

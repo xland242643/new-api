@@ -28,6 +28,10 @@ func metaLearnError(c *gin.Context, err error) {
 		status, code = http.StatusNotFound, "plan_not_found"
 	case errors.Is(err, model.ErrMetaLearnUserNotFound):
 		status, code = http.StatusNotFound, "user_not_found"
+	case errors.Is(err, model.ErrMetaLearnRequestNotFound):
+		status, code = http.StatusNotFound, "request_not_found"
+	case errors.Is(err, model.ErrMetaLearnFundingConflict):
+		status, code = http.StatusConflict, "funding_conflict"
 	}
 	c.JSON(status, gin.H{"success": false, "code": code})
 }
@@ -94,6 +98,15 @@ func GrantMetaLearnPeriod(c *gin.Context)  { setMetaLearnPeriod(c, false) }
 func RevokeMetaLearnPeriod(c *gin.Context) { setMetaLearnPeriod(c, true) }
 func QueryMetaLearnSubscriptions(c *gin.Context) {
 	result, err := model.GetMetaLearnSubscriptions(c.Param("business_user_id"))
+	if err != nil {
+		metaLearnError(c, err)
+		return
+	}
+	common.ApiSuccess(c, result)
+}
+
+func QueryMetaLearnFundingReceipt(c *gin.Context) {
+	result, err := model.GetMetaLearnFundingReceipt(c.Param("business_user_id"), c.Param("request_id"))
 	if err != nil {
 		metaLearnError(c, err)
 		return

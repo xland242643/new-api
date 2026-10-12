@@ -136,6 +136,10 @@ function ProjectAttribution(props: { currentYear: number; inline?: boolean }) {
         {t('New API')}
       </a>
       . {t(NEW_API_FOOTER_ATTRIBUTION_KEY)}
+      {' · '}
+      <a href='/api/metalearn/source' className='hover:text-foreground underline'>
+        Modified source / 修改版源码
+      </a>
     </span>
   )
   if (props.inline) {

@@ -41,6 +41,9 @@ type BillingSession struct {
 func (s *BillingSession) Settle(actualQuota int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if funding, ok := s.funding.(*SubscriptionFunding); ok && funding.metalearn {
+		return s.settleMetaLearnLocked(funding, actualQuota)
+	}
 	if s.settled {
 		return nil
 	}
@@ -81,6 +84,11 @@ func (s *BillingSession) Settle(actualQuota int) error {
 // Refund 退还所有预扣费，幂等安全，异步执行。
 func (s *BillingSession) Refund(c *gin.Context) {
 	s.mu.Lock()
+	if funding, ok := s.funding.(*SubscriptionFunding); ok && funding.metalearn {
+		s.refundMetaLearnLocked(funding)
+		s.mu.Unlock()
+		return
+	}
 	if s.settled || s.refunded || !s.needsRefundLocked() {
 		s.mu.Unlock()
 		return
@@ -160,6 +168,9 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 	delta := targetQuota - s.preConsumedQuota
 	if delta <= 0 {
 		return nil
+	}
+	if funding, ok := s.funding.(*SubscriptionFunding); ok && funding.metalearn {
+		return s.reserveMetaLearnLocked(funding, delta)
 	}
 
 	if err := s.reserveFunding(delta); err != nil {
@@ -343,8 +354,15 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 	if relayInfo == nil {
 		return nil, types.NewError(fmt.Errorf("relayInfo is nil"), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
 	}
+	isMetaLearn, guardErr := RequireMetaLearnStandardChat(c, relayInfo)
+	if guardErr != nil {
+		return nil, MetaLearnRelayGuardAPIError(guardErr)
+	}
 
 	pref := common.NormalizeBillingPreference(relayInfo.UserSetting.BillingPreference)
+	if isMetaLearn && pref != "subscription_only" {
+		return nil, MetaLearnRelayGuardAPIError(ErrMetaLearnRelayUnsupported)
+	}
 
 	// 钱包路径需要先检查用户额度
 	tryWallet := func() (*BillingSession, *types.NewAPIError) {
@@ -388,6 +406,7 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 				userId:    relayInfo.UserId,
 				modelName: relayInfo.OriginModelName,
 				amount:    subConsume,
+				metalearn: isMetaLearn,
 			},
 		}
 		// 必须传 subConsume 而非 preConsumedQuota，保证 SubscriptionFunding.amount、

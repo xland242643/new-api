@@ -28,7 +28,7 @@ func setupMetaLearnTest(t *testing.T) *SubscriptionPlan {
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(8)
-	require.NoError(t, db.AutoMigrate(&User{}, &Token{}, &SubscriptionPlan{}, &UserSubscription{}, &SubscriptionPreConsumeRecord{}, &MetaLearnBillingUser{}, &MetaLearnBillingPeriod{}))
+	require.NoError(t, db.AutoMigrate(&User{}, &Token{}, &SubscriptionPlan{}, &UserSubscription{}, &SubscriptionPreConsumeRecord{}, &MetaLearnBillingUser{}, &MetaLearnBillingPeriod{}, &MetaLearnFundingReceipt{}, &MetaLearnFundingReservation{}))
 	plan := &SubscriptionPlan{Id: 10000 + int(metalearnTestPlanID.Add(1)), Title: "test paid plan", Enabled: true, TotalAmount: 11500000, QuotaResetPeriod: SubscriptionResetNever}
 	require.NoError(t, db.Create(plan).Error)
 	t.Cleanup(func() {
@@ -181,8 +181,11 @@ func TestMetaLearnFuturePeriodNotSpendable(t *testing.T) {
 	require.Empty(t, list)
 	_, err = PreConsumeUserSubscription("future-request", user.GatewayUserID, "mock-model", 0, 1)
 	require.Error(t, err)
-	// Transition to started time succeeds through the unchanged native funding.
-	require.NoError(t, DB.Model(&UserSubscription{}).Where("user_id = ?", user.GatewayUserID).Update("start_time", GetDBTimestamp()-1).Error)
+	// Simulate the clock reaching the paid start without changing just one
+	// side of the immutable period/subscription identity.
+	started := GetDBTimestamp() - 1
+	require.NoError(t, DB.Model(&UserSubscription{}).Where("user_id = ?", user.GatewayUserID).Update("start_time", started).Error)
+	require.NoError(t, DB.Model(&MetaLearnBillingPeriod{}).Where("business_user_id = ?", metalearnTestUUID).Update("start_time", started).Error)
 	active, err = HasActiveUserSubscription(user.GatewayUserID)
 	require.NoError(t, err)
 	require.True(t, active)
@@ -258,7 +261,7 @@ func TestMetaLearnNativeRefundAtomic(t *testing.T) {
 	// Native settlement and failure refund use the same subscription snapshot.
 	_, err = PreConsumeUserSubscription("native-settle", user.GatewayUserID, "mock", 0, 100)
 	require.NoError(t, err)
-	require.NoError(t, PostConsumeUserSubscriptionDelta(grant.SubscriptionID, 50))
+	require.NoError(t, SettleMetaLearnFunding("native-settle", user.GatewayUserID, grant.SubscriptionID, 150))
 	require.NoError(t, DB.First(&sub, grant.SubscriptionID).Error)
 	require.EqualValues(t, 150, sub.AmountUsed)
 }

@@ -376,6 +376,9 @@ func TokenAuth() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusForbidden, common.TranslateMessage(c, i18n.MsgAuthUserBanned))
 			return
 		}
+		if !allowMetaLearnRelayToken(c, token.UserId) {
+			return
+		}
 
 		userCache.WriteContext(c)
 

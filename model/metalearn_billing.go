@@ -118,7 +118,10 @@ func metalearnTransaction(fn func(*gorm.DB) error) error {
 			return nil
 		}
 		text := strings.ToLower(err.Error())
-		if !strings.Contains(text, "database is locked") && !strings.Contains(text, "database table is locked") && !strings.Contains(text, "deadlock") && !strings.Contains(text, "serialization failure") && !strings.Contains(text, "could not serialize access") {
+		// Under READ COMMITTED two preconsume callers can both miss a request
+		// anchor before serializing on the subscription row. A duplicate insert
+		// aborts PostgreSQL's transaction: replay only in a fresh transaction.
+		if !strings.Contains(text, "database is locked") && !strings.Contains(text, "database table is locked") && !strings.Contains(text, "deadlock") && !strings.Contains(text, "serialization failure") && !strings.Contains(text, "could not serialize access") && !strings.Contains(text, "duplicate key") && !strings.Contains(text, "duplicate entry") && !strings.Contains(text, "unique constraint") {
 			return err
 		}
 		time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
