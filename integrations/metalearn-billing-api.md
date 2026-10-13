@@ -64,3 +64,28 @@ New mapped users use `subscription_first`: native subscription pre-consumption f
 Dedicated wallet pre-consumption, additional reservation, settlement and request-failure refund use native integer arithmetic with durable transactions and row locks. Every receipt explicitly has `funding_source`; wallet uses `receipt_scope:"wallet_funding"` and zero/empty subscription/plan/channel/period identities. Subscription keeps `subscription_funding`. Funding delta and receipt state commit together; request failures refund reservations exactly once. Token accounting remains separately queued/reported/error.
 
 The production PostgreSQL `users.quota` column was read-only verified as bigint/int8. Checked platform-int arithmetic rejects overflow without a fabricated32-bit balance limit. Production payment/consumption and database concurrency acceptance remain pending; integration token and application purchase flags stay disabled.
+
+
+## Atomic latest paid period (Apple group allowance)
+
+`POST /api/metalearn/billing/periods/switch` uses the existing dedicated integration credential.
+It accepts the immutable paid-period tuple plus `scope_key` (64 lowercase hex),
+`effective_time_ms` (verified purchase time; ceiling equals start_time), `expected_quota`
+(a consistency check against the native plan/snapshot, never a quota override), and `revoke`.
+MetaLearn derives the scope from its business UUID and verified project/app/environment/store group.
+The policy permits only one effective monthly allowance per scope; cash refunds belong to Apple.
+
+The database transaction locks the scope, reuses the original grant/revoke transaction helper,
+ends the prior allowance and advances the head by actual paid time. Neither unused quota nor
+used quota is transferred; wallet quota is untouched. Equal-time different orders conflict.
+Older paid periods become irrevocable tombstones; they cannot revive through either endpoint.
+A future grant returns retryable `period_not_started` without ending the current allowance.
+A future refund only persists its tombstone. A refunded newer upgrade ends the old allowance
+when its effective time is reached; no refunded quota is issued. Old in-flight model requests
+retain their original funding subscription and settle/refund there after replacement.
+
+Unscoped active legacy allowances block first adoption (except the exact same period); the
+operator must reconcile those to verified groups before enabling scoped purchasing.
+Grant/retirement/head updates all roll back if plan/quota/identity/write validation fails.
+The service does not infer a subscription group or an upgrade from product names, original
+transaction IDs, PRODUCT_CHANGE, client dates, or client balances.

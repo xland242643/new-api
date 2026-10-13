@@ -11,6 +11,7 @@ func setMetaLearnBillingRouter(api *gin.RouterGroup) {
 	integration := api.Group("/metalearn/billing", middleware.MetaLearnBillingAuth())
 	integration.POST("/users", controller.ProvisionMetaLearnUser)
 	integration.POST("/periods", controller.GrantMetaLearnPeriod)
+	integration.POST("/periods/switch", controller.SwitchMetaLearnPeriod)
 	integration.POST("/periods/revoke", controller.RevokeMetaLearnPeriod)
 	integration.POST("/topups", controller.GrantMetaLearnTopUp)
 	integration.POST("/topups/revoke", controller.RevokeMetaLearnTopUp)

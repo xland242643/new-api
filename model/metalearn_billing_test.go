@@ -28,7 +28,7 @@ func setupMetaLearnTest(t *testing.T) *SubscriptionPlan {
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(8)
-	require.NoError(t, db.AutoMigrate(&User{}, &Token{}, &SubscriptionPlan{}, &UserSubscription{}, &SubscriptionPreConsumeRecord{}, &MetaLearnBillingUser{}, &MetaLearnBillingPeriod{}, &MetaLearnFundingReceipt{}, &MetaLearnFundingReservation{}, &TopUp{}, &MetaLearnWalletTopUp{}))
+	require.NoError(t, db.AutoMigrate(&User{}, &Token{}, &SubscriptionPlan{}, &UserSubscription{}, &SubscriptionPreConsumeRecord{}, &MetaLearnBillingUser{}, &MetaLearnBillingPeriod{}, &MetaLearnBillingScope{}, &MetaLearnFundingReceipt{}, &MetaLearnFundingReservation{}, &TopUp{}, &MetaLearnWalletTopUp{}))
 	plan := &SubscriptionPlan{Id: 10000 + int(metalearnTestPlanID.Add(1)), Title: "test paid plan", Enabled: true, TotalAmount: 11500000, QuotaResetPeriod: SubscriptionResetNever}
 	require.NoError(t, db.Create(plan).Error)
 	t.Cleanup(func() {

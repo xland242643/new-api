@@ -14,6 +14,8 @@ import (
 func metaLearnError(c *gin.Context, err error) {
 	status, code := http.StatusServiceUnavailable, "integration_unavailable"
 	switch {
+	case errors.Is(err, model.ErrMetaLearnPeriodNotStarted):
+		status, code = http.StatusConflict, "period_not_started"
 	case errors.Is(err, model.ErrMetaLearnInvalid):
 		status, code = http.StatusBadRequest, "invalid_request"
 	case errors.Is(err, model.ErrMetaLearnIdentity):
@@ -138,6 +140,21 @@ func GrantMetaLearnTopUp(c *gin.Context)  { setMetaLearnTopUp(c, false) }
 func RevokeMetaLearnTopUp(c *gin.Context) { setMetaLearnTopUp(c, true) }
 func QueryMetaLearnWallet(c *gin.Context) {
 	result, err := model.GetMetaLearnWallet(c.Param("business_user_id"))
+	if err != nil {
+		metaLearnError(c, err)
+		return
+	}
+	common.ApiSuccess(c, result)
+}
+
+// Only the existing scoped machine credential may supply a verified store scope.
+func SwitchMetaLearnPeriod(c *gin.Context) {
+	var req model.MetaLearnPeriodSwitchRequest
+	if err := decodeMetaLearnRequest(c, &req, "business_user_id", "channel", "period_key", "plan_id", "start_time", "end_time", "scope_key", "effective_time_ms", "expected_quota", "revoke"); err != nil {
+		metaLearnError(c, err)
+		return
+	}
+	result, err := model.SwitchMetaLearnBillingPeriod(req)
 	if err != nil {
 		metaLearnError(c, err)
 		return

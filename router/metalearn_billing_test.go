@@ -33,7 +33,7 @@ func billingTestRouter(t *testing.T) *gin.Engine {
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.SubscriptionPlan{}, &model.UserSubscription{}, &model.MetaLearnBillingUser{}, &model.MetaLearnBillingPeriod{}, &model.SubscriptionPreConsumeRecord{}, &model.MetaLearnFundingReceipt{}, &model.MetaLearnFundingReservation{}, &model.TopUp{}, &model.MetaLearnWalletTopUp{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.SubscriptionPlan{}, &model.UserSubscription{}, &model.MetaLearnBillingUser{}, &model.MetaLearnBillingPeriod{}, &model.MetaLearnBillingScope{}, &model.SubscriptionPreConsumeRecord{}, &model.MetaLearnFundingReceipt{}, &model.MetaLearnFundingReservation{}, &model.TopUp{}, &model.MetaLearnWalletTopUp{}))
 	require.NoError(t, db.Create(&model.SubscriptionPlan{Id: 991, Title: "fixed server snapshot", Enabled: true, TotalAmount: 11500000}).Error)
 	t.Cleanup(func() {
 		model.DB = priorDB
@@ -55,6 +55,23 @@ func billingCall(r http.Handler, method, path, body, token string) *httptest.Res
 	out := httptest.NewRecorder()
 	r.ServeHTTP(out, req)
 	return out
+}
+
+func TestMetaLearnScopedSwitchRejectsInjectionAndHonorsExactPlanQuota(t *testing.T) {
+	r := billingTestRouter(t)
+	path := "/api/metalearn/billing/periods/switch"
+	start := model.GetDBTimestamp() - 10
+	body := fmt.Sprintf(`{"business_user_id":%q,"channel":"revenuecat","period_key":"store-paid-1","plan_id":991,"start_time":%d,"end_time":%d,"scope_key":%q,"effective_time_ms":%d,"expected_quota":11500000,"revoke":false}`, billingUUID, start, start+86400, strings.Repeat("a", 64), start*1000)
+	require.Equal(t, 401, billingCall(r, "POST", path, body, "").Code)
+	require.Equal(t, 400, billingCall(r, "POST", path, strings.TrimSuffix(body, "}")+`,"amount_total":99999999}`, "isolated-integration-test-token").Code)
+	require.Equal(t, 200, billingCall(r, "POST", "/api/metalearn/billing/users", fmt.Sprintf(`{"business_user_id":%q}`, billingUUID), "isolated-integration-test-token").Code)
+	require.Equal(t, 200, billingCall(r, "POST", path, body, "isolated-integration-test-token").Code)
+	require.Equal(t, 200, billingCall(r, "POST", path, body, "isolated-integration-test-token").Code)
+	bad := strings.Replace(body, `"expected_quota":11500000`, `"expected_quota":99999999`, 1)
+	require.Equal(t, 409, billingCall(r, "POST", path, bad, "isolated-integration-test-token").Code)
+	var count int64
+	require.NoError(t, model.DB.Model(&model.UserSubscription{}).Count(&count).Error)
+	require.EqualValues(t, 1, count)
 }
 
 func TestMetaLearnScopedRouteRejectsMissingCredentialAndUnknownFields(t *testing.T) {

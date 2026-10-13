@@ -51,6 +51,7 @@ type MetaLearnBillingPeriod struct {
 	EndTime          int64
 	Status           string `gorm:"type:varchar(16)"`
 	SubscriptionID   int
+	ScopeKey         string `gorm:"type:varchar(64);not null;default:'';index"`
 	QuotaResetPeriod string `gorm:"type:varchar(16)"`
 }
 
@@ -273,69 +274,71 @@ func SetMetaLearnBillingPeriod(r MetaLearnPeriodRequest, revoke bool) (*MetaLear
 		return nil, ErrMetaLearnInvalid
 	}
 	var result *MetaLearnPeriodResult
-	err := metalearnTransaction(func(tx *gorm.DB) error {
-		seed := MetaLearnBillingPeriod{Channel: r.Channel, PeriodKey: r.PeriodKey, BusinessUserID: r.BusinessUserID, PlanID: r.PlanID, StartTime: r.StartTime, EndTime: r.EndTime, Status: "pending", QuotaResetPeriod: SubscriptionResetNever}
-		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&seed).Error; err != nil {
-			return err
-		}
-		var period MetaLearnBillingPeriod
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("channel = ? AND period_key = ?", r.Channel, r.PeriodKey).First(&period).Error; err != nil {
-			return err
-		}
-		if !period.matches(r) {
-			return ErrMetaLearnPeriodConflict
-		}
-		if revoke {
-			if period.SubscriptionID != 0 {
-				if _, err := metaLearnPeriodResult(tx, &period); err != nil {
-					return err
-				}
-				if err := tx.Model(&UserSubscription{}).Where("id = ?", period.SubscriptionID).Updates(map[string]any{"status": "cancelled", "updated_at": common.GetTimestamp()}).Error; err != nil {
-					return err
-				}
-			}
-			period.Status = "revoked"
-			if err := tx.Save(&period).Error; err != nil {
-				return err
-			}
-		} else {
-			if period.Status == "revoked" {
-				return ErrMetaLearnPeriodRevoked
-			}
-			if period.Status == "pending" {
-				mapping, err := metaLearnMappedUser(tx, r.BusinessUserID)
-				if err != nil {
-					return err
-				}
-				var plan SubscriptionPlan
-				if err := tx.First(&plan, r.PlanID).Error; err != nil {
-					if errors.Is(err, gorm.ErrRecordNotFound) {
-						return ErrMetaLearnPlanNotFound
-					}
-					return err
-				}
-				if !plan.Enabled || plan.TotalAmount <= 0 {
-					return ErrMetaLearnPlanNotEligible
-				}
-				sub := UserSubscription{UserId: mapping.GatewayUserID, PlanId: plan.Id, AmountTotal: plan.TotalAmount, StartTime: r.StartTime, EndTime: r.EndTime, Status: "active", Source: MetaLearnSubscriptionSource}
-				if err := tx.Create(&sub).Error; err != nil {
-					return err
-				}
-				period.SubscriptionID = sub.Id
-				period.Status = "granted"
-				if err := tx.Save(&period).Error; err != nil {
-					return err
-				}
-			}
-		}
-		var err error
-		result, err = metaLearnPeriodResult(tx, &period)
-		return err
-	})
+	err := metalearnTransaction(func(tx *gorm.DB) error { return setMetaLearnPeriodTx(tx, r, revoke, &result) })
 	if err != nil {
 		return nil, err
 	}
 	return result, nil
+}
+
+func setMetaLearnPeriodTx(tx *gorm.DB, r MetaLearnPeriodRequest, revoke bool, result **MetaLearnPeriodResult) error {
+	seed := MetaLearnBillingPeriod{Channel: r.Channel, PeriodKey: r.PeriodKey, BusinessUserID: r.BusinessUserID, PlanID: r.PlanID, StartTime: r.StartTime, EndTime: r.EndTime, Status: "pending", QuotaResetPeriod: SubscriptionResetNever}
+	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&seed).Error; err != nil {
+		return err
+	}
+	var period MetaLearnBillingPeriod
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("channel = ? AND period_key = ?", r.Channel, r.PeriodKey).First(&period).Error; err != nil {
+		return err
+	}
+	if !period.matches(r) {
+		return ErrMetaLearnPeriodConflict
+	}
+	if revoke {
+		if period.SubscriptionID != 0 {
+			if _, err := metaLearnPeriodResult(tx, &period); err != nil {
+				return err
+			}
+			if err := tx.Model(&UserSubscription{}).Where("id = ?", period.SubscriptionID).Updates(map[string]any{"status": "cancelled", "updated_at": common.GetTimestamp()}).Error; err != nil {
+				return err
+			}
+		}
+		period.Status = "revoked"
+		if err := tx.Save(&period).Error; err != nil {
+			return err
+		}
+	} else {
+		if period.Status == "revoked" {
+			return ErrMetaLearnPeriodRevoked
+		}
+		if period.Status == "pending" {
+			mapping, err := metaLearnMappedUser(tx, r.BusinessUserID)
+			if err != nil {
+				return err
+			}
+			var plan SubscriptionPlan
+			if err := tx.First(&plan, r.PlanID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrMetaLearnPlanNotFound
+				}
+				return err
+			}
+			if !plan.Enabled || plan.TotalAmount <= 0 {
+				return ErrMetaLearnPlanNotEligible
+			}
+			sub := UserSubscription{UserId: mapping.GatewayUserID, PlanId: plan.Id, AmountTotal: plan.TotalAmount, StartTime: r.StartTime, EndTime: r.EndTime, Status: "active", Source: MetaLearnSubscriptionSource}
+			if err := tx.Create(&sub).Error; err != nil {
+				return err
+			}
+			period.SubscriptionID = sub.Id
+			period.Status = "granted"
+			if err := tx.Save(&period).Error; err != nil {
+				return err
+			}
+		}
+	}
+	var err error
+	*result, err = metaLearnPeriodResult(tx, &period)
+	return err
 }
 
 func GetMetaLearnSubscriptions(id string) (*MetaLearnSubscriptionsResult, error) {
