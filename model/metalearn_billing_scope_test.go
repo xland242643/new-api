@@ -150,3 +150,35 @@ func TestMetaLearnSwitchOutOfOrderFutureAndRefund(t *testing.T) {
 	_, err = SwitchMetaLearnBillingPeriod(latest)
 	require.ErrorIs(t, err, ErrMetaLearnPeriodRevoked)
 }
+
+func TestMetaLearnSwitchConcurrentTargetRefundNeverKeepsOldAllowance(t *testing.T) {
+	for range 8 {
+		plan := setupMetaLearnTest(t)
+		_, err := EnsureMetaLearnBillingUser(metalearnTestUUID)
+		require.NoError(t, err)
+		first := MetaLearnPeriodSwitchRequest{MetaLearnPeriodRequest: metalearnTestPeriod(plan.Id), ScopeKey: strings.Repeat("d", 64), ExpectedQuota: plan.TotalAmount}
+		first.EffectiveTimeMS = first.StartTime * 1000
+		_, err = SwitchMetaLearnBillingPeriod(first)
+		require.NoError(t, err)
+		next := first
+		next.PeriodKey = "refund-race"
+		next.StartTime++
+		next.EffectiveTimeMS += 1000
+		var wg sync.WaitGroup
+		var grantErr, refundErr error
+		wg.Add(2)
+		go func() { defer wg.Done(); _, grantErr = SwitchMetaLearnBillingPeriod(next) }()
+		go func() { defer wg.Done(); _, refundErr = SetMetaLearnBillingPeriod(next.MetaLearnPeriodRequest, true) }()
+		wg.Wait()
+		require.NoError(t, refundErr)
+		if grantErr != nil {
+			require.ErrorIs(t, grantErr, ErrMetaLearnPeriodRevoked)
+		}
+		var old MetaLearnBillingPeriod
+		require.NoError(t, DB.First(&old, "period_key = ?", first.PeriodKey).Error)
+		require.Equal(t, "revoked", old.Status)
+		var head MetaLearnBillingScope
+		require.NoError(t, DB.First(&head, "scope_key = ?", next.ScopeKey).Error)
+		require.Equal(t, next.PeriodKey, head.PeriodKey)
+	}
+}

@@ -76,7 +76,15 @@ func SwitchMetaLearnBillingPeriod(r MetaLearnPeriodSwitchRequest) (*MetaLearnPer
 		}
 		retired = scope.EffectiveTimeMS > r.EffectiveTimeMS || existing.Status == "revoked"
 		if err := setMetaLearnPeriodTx(tx, r.MetaLearnPeriodRequest, r.Revoke || retired, &result); err != nil {
-			return err
+			if !errors.Is(err, ErrMetaLearnPeriodRevoked) {
+				return err
+			}
+			// A refund may obtain the period lock after our initial lookup.
+			// Keep its tombstone and still end the prior upgraded allowance.
+			retired = true
+			if err := setMetaLearnPeriodTx(tx, r.MetaLearnPeriodRequest, true, &result); err != nil {
+				return err
+			}
 		}
 		if result.SubscriptionID > 0 && result.AmountTotal != r.ExpectedQuota {
 			return ErrMetaLearnPlanNotEligible
