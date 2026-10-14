@@ -89,3 +89,10 @@ operator must reconcile those to verified groups before enabling scoped purchasi
 Grant/retirement/head updates all roll back if plan/quota/identity/write validation fails.
 The service does not infer a subscription group or an upgrade from product names, original
 transaction IDs, PRODUCT_CHANGE, client dates, or client balances.
+
+
+## Huawei converted time allowance
+
+The same scoped switch endpoint optionally accepts `base_duration_ms` and `paid_duration_ms` **only for channel `huawei`**. These are verified store durations supplied by MetaLearn's private integration, not client inputs. Both must be present together; total duration must match exact effective time and rounded-down expiry, lie between one and two base periods and at most 64 days. Native total is `floor(plan.TotalAmount * paid_duration_ms / base_duration_ms)` using integers; `expected_quota` remains a consistency check, not an arbitrary balance override. Duration fields are immutable with the paid tuple. Retries of a granted period retain its quota snapshot even if the native plan changes. Refunds retain the snapshot and never restore the prior allowance. The wallet and in-flight funding receipts retain their native behavior.
+
+An existing unscoped period can adopt a scope only by replaying its identical tuple first. This preserves its original subscription ID, consumption and quota; unrelated active unscoped periods still block adoption. No provider signature or merchant charging logic is implemented in this independent service.

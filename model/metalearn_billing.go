@@ -51,6 +51,8 @@ type MetaLearnBillingPeriod struct {
 	EndTime          int64
 	Status           string `gorm:"type:varchar(16)"`
 	SubscriptionID   int
+	BaseDurationMS   int64  `gorm:"not null;default:0"`
+	PaidDurationMS   int64  `gorm:"not null;default:0"`
 	ScopeKey         string `gorm:"type:varchar(64);not null;default:'';index"`
 	QuotaResetPeriod string `gorm:"type:varchar(16)"`
 }
@@ -281,7 +283,7 @@ func SetMetaLearnBillingPeriod(r MetaLearnPeriodRequest, revoke bool) (*MetaLear
 	return result, nil
 }
 
-func setMetaLearnPeriodTx(tx *gorm.DB, r MetaLearnPeriodRequest, revoke bool, result **MetaLearnPeriodResult) error {
+func setMetaLearnPeriodTx(tx *gorm.DB, r MetaLearnPeriodRequest, revoke bool, result **MetaLearnPeriodResult, quotaOverride ...int64) error {
 	seed := MetaLearnBillingPeriod{Channel: r.Channel, PeriodKey: r.PeriodKey, BusinessUserID: r.BusinessUserID, PlanID: r.PlanID, StartTime: r.StartTime, EndTime: r.EndTime, Status: "pending", QuotaResetPeriod: SubscriptionResetNever}
 	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&seed).Error; err != nil {
 		return err
@@ -325,7 +327,14 @@ func setMetaLearnPeriodTx(tx *gorm.DB, r MetaLearnPeriodRequest, revoke bool, re
 			if !plan.Enabled || plan.TotalAmount <= 0 {
 				return ErrMetaLearnPlanNotEligible
 			}
-			sub := UserSubscription{UserId: mapping.GatewayUserID, PlanId: plan.Id, AmountTotal: plan.TotalAmount, StartTime: r.StartTime, EndTime: r.EndTime, Status: "active", Source: MetaLearnSubscriptionSource}
+			total := plan.TotalAmount
+			if len(quotaOverride) > 0 {
+				if len(quotaOverride) != 1 || quotaOverride[0] <= 0 {
+					return ErrMetaLearnInvalid
+				}
+				total = quotaOverride[0]
+			}
+			sub := UserSubscription{UserId: mapping.GatewayUserID, PlanId: plan.Id, AmountTotal: total, StartTime: r.StartTime, EndTime: r.EndTime, Status: "active", Source: MetaLearnSubscriptionSource}
 			if err := tx.Create(&sub).Error; err != nil {
 				return err
 			}

@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"math/big"
 	"regexp"
 
 	"gorm.io/gorm"
@@ -26,6 +27,8 @@ type MetaLearnPeriodSwitchRequest struct {
 	ScopeKey        string `json:"scope_key"`
 	EffectiveTimeMS int64  `json:"effective_time_ms"`
 	ExpectedQuota   int64  `json:"expected_quota"`
+	BaseDurationMS  int64  `json:"base_duration_ms,omitempty"`
+	PaidDurationMS  int64  `json:"paid_duration_ms,omitempty"`
 	Revoke          bool   `json:"revoke"`
 }
 
@@ -33,6 +36,11 @@ func SwitchMetaLearnBillingPeriod(r MetaLearnPeriodSwitchRequest) (*MetaLearnPer
 	if r.ExpectedQuota <= 0 || !r.valid() || !metaLearnScopeKey.MatchString(r.ScopeKey) || r.EffectiveTimeMS <= 0 ||
 		(r.EffectiveTimeMS/1000+boolSecond(r.EffectiveTimeMS%1000 != 0)) != r.StartTime {
 		return nil, ErrMetaLearnInvalid
+	}
+	if r.BaseDurationMS != 0 || r.PaidDurationMS != 0 {
+		if r.Channel != "huawei" || r.BaseDurationMS <= 0 || r.PaidDurationMS < r.BaseDurationMS || r.PaidDurationMS-r.BaseDurationMS > r.BaseDurationMS || r.PaidDurationMS > 64*86400000 || r.EffectiveTimeMS > 9223372036854775807-r.PaidDurationMS || (r.EffectiveTimeMS+r.PaidDurationMS)/1000 != r.EndTime {
+			return nil, ErrMetaLearnInvalid
+		}
 	}
 	// Do not end today's allowance when a future renewal arrives early.
 	now := GetDBTimestamp()
@@ -74,8 +82,27 @@ func SwitchMetaLearnBillingPeriod(r MetaLearnPeriodSwitchRequest) (*MetaLearnPer
 				return ErrMetaLearnPeriodConflict
 			}
 		}
+		if lookup == nil && (existing.BaseDurationMS != r.BaseDurationMS || existing.PaidDurationMS != r.PaidDurationMS) {
+			return ErrMetaLearnPeriodConflict
+		}
+		var override []int64
+		if r.BaseDurationMS > 0 && (lookup != nil || existing.Status == "pending") && !r.Revoke {
+			var plan SubscriptionPlan
+			if err := tx.First(&plan, r.PlanID).Error; err != nil {
+				return ErrMetaLearnPlanNotFound
+			}
+			if !plan.Enabled || plan.TotalAmount <= 0 {
+				return ErrMetaLearnPlanNotEligible
+			}
+			quota := new(big.Int).Mul(big.NewInt(plan.TotalAmount), big.NewInt(r.PaidDurationMS))
+			quota.Quo(quota, big.NewInt(r.BaseDurationMS))
+			if !quota.IsInt64() || quota.Int64() != r.ExpectedQuota {
+				return ErrMetaLearnPlanNotEligible
+			}
+			override = []int64{quota.Int64()}
+		}
 		retired = scope.EffectiveTimeMS > r.EffectiveTimeMS || existing.Status == "revoked"
-		if err := setMetaLearnPeriodTx(tx, r.MetaLearnPeriodRequest, r.Revoke || retired, &result); err != nil {
+		if err := setMetaLearnPeriodTx(tx, r.MetaLearnPeriodRequest, r.Revoke || retired, &result, override...); err != nil {
 			if !errors.Is(err, ErrMetaLearnPeriodRevoked) {
 				return err
 			}
@@ -96,7 +123,7 @@ func SwitchMetaLearnBillingPeriod(r MetaLearnPeriodSwitchRequest) (*MetaLearnPer
 		if existing.ScopeKey != "" && existing.ScopeKey != r.ScopeKey {
 			return ErrMetaLearnPeriodConflict
 		}
-		if err := tx.Model(&MetaLearnBillingPeriod{}).Where("channel = ? AND period_key = ?", r.Channel, r.PeriodKey).Update("scope_key", r.ScopeKey).Error; err != nil {
+		if err := tx.Model(&MetaLearnBillingPeriod{}).Where("channel = ? AND period_key = ?", r.Channel, r.PeriodKey).Updates(map[string]any{"scope_key": r.ScopeKey, "base_duration_ms": r.BaseDurationMS, "paid_duration_ms": r.PaidDurationMS}).Error; err != nil {
 			return err
 		}
 		if scope.EffectiveTimeMS < r.EffectiveTimeMS && r.StartTime <= now {

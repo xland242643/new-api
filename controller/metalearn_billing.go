@@ -150,7 +150,7 @@ func QueryMetaLearnWallet(c *gin.Context) {
 // Only the existing scoped machine credential may supply a verified store scope.
 func SwitchMetaLearnPeriod(c *gin.Context) {
 	var req model.MetaLearnPeriodSwitchRequest
-	if err := decodeMetaLearnRequest(c, &req, "business_user_id", "channel", "period_key", "plan_id", "start_time", "end_time", "scope_key", "effective_time_ms", "expected_quota", "revoke"); err != nil {
+	if err := decodeMetaLearnRequest(c, &req, "business_user_id", "channel", "period_key", "plan_id", "start_time", "end_time", "scope_key", "effective_time_ms", "expected_quota", "revoke", "base_duration_ms", "paid_duration_ms"); err != nil {
 		metaLearnError(c, err)
 		return
 	}
