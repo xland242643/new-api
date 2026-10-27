@@ -9,6 +9,7 @@ import (
 func setMetaLearnBillingRouter(api *gin.RouterGroup) {
 	api.GET("/metalearn/source", controller.DownloadMetaLearnSource)
 	integration := api.Group("/metalearn/billing", middleware.MetaLearnBillingAuth())
+	integration.POST("/registration-rewards", controller.GrantMetaLearnRegistrationReward)
 	integration.POST("/users", controller.ProvisionMetaLearnUser)
 	integration.POST("/periods", controller.GrantMetaLearnPeriod)
 	integration.POST("/periods/switch", controller.SwitchMetaLearnPeriod)
